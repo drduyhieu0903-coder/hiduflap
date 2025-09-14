@@ -1,0 +1,7 @@
+streamlit==1.48.1
+pandas==2.3.1
+Pillow==11.3.0
+PyMuPDF==1.26.3
+requests==2.32.4
+beautifulsoup4==4.13.4
+lxml
