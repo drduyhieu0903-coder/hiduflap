@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Any, Set
 from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta
-from googletrans import Translator
 import streamlit as st
 import pandas as pd
 from PIL import Image, UnidentifiedImageError, ExifTags
@@ -3176,4 +3175,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
