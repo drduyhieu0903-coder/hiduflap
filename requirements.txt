@@ -1,7 +1,4 @@
-# Yêu cầu dùng Python 3.11
-python==3.11
-
-# Các thư viện của bạn
+python==3.10
 streamlit
 pandas
 Pillow
