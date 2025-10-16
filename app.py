@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Any, Set
 from urllib.parse import urljoin, urlparse
 from datetime import datetime, timedelta
-
 import streamlit as st
 import pandas as pd
 from PIL import Image, UnidentifiedImageError, ExifTags
@@ -422,30 +421,8 @@ def process_pending_updates():
     st.session_state.defer_rerun = False
 
 # ========================= UTILITY FUNCTIONS =========================
-@st.cache_data(ttl=300, show_spinner=False)
-def load_metadata_cached():
-    """Load metadata với cache 5 phút"""
-    manager = get_metadata_manager()
-    return manager.get()
+@st.cache_data(show_spinner=False)
 
-@st.cache_data(ttl=60, show_spinner=False)
-def get_visible_books_list(hidden_books: tuple):
-    """Cache danh sách sách hiển thị"""
-    df = load_metadata_cached()
-    all_books = sorted(df["book_name"].dropna().unique().tolist())
-    return [b for b in all_books if b not in hidden_books]
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_thumbnail_base64(image_path: str) -> str:
-    """Cache thumbnail dưới dạng base64"""
-    try:
-        thumb_p = thumb_path_for(image_path)
-        if thumb_p.exists():
-            with open(thumb_p, "rb") as f:
-                return base64.b64encode(f.read()).decode()
-    except Exception:
-        pass
-    return ""
 def safe_book_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\u00C0-\u1EF9]+", "_", str(name)).strip("_") or "unknown"
 
@@ -1680,11 +1657,11 @@ def render_selection_strip_optimized(sel_list: List[str], current_page_images: L
             st.success(f"Đã đánh dấu {len(sel_list)} ảnh!")
         
         if col4.button("🔬 So sánh", key="compare_batch"):
-            if 2 <= len(sel_list) <= 6:
+            if 2 <= len(sel_list) <= 4:
                 st.session_state.comparison_list = sel_list
                 st.rerun()
             else:
-                st.warning("Chọn từ 2 đến 6 ảnh để so sánh.")
+                st.warning("Chọn từ 2 đến 4 ảnh để so sánh.")
         
         # Hiển thị trạng thái trang hiện tại
         st.caption(f"Trang này: {sum(1 for img in current_page_images if img in sel_list)}/{len(current_page_images)} ảnh đã chọn")
@@ -1725,7 +1702,7 @@ def get_patient_images_count(patient_id: str) -> int:
     return len(df[df["patient_id"] == patient_id])
 def render_quick_edit_dialog():
     """
-    Dialog chỉnh sửa nhanh KHÔNG BLOCKING - cho phép làm việc song song.
+    Dialog chỉnh sửa nhanh, đã được nâng cấp để có thể xóa ảnh trực tiếp.
     """
     if "quick_edit_image" not in st.session_state or not st.session_state.quick_edit_image:
         return
@@ -1738,177 +1715,138 @@ def render_quick_edit_dialog():
         return
     r = row.iloc[0]
 
-    # Sử dụng sidebar thay vì dialog để không block
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### ✏️ CHỈNH SỬA NHANH")
-        
-        # Nút đóng ở đầu
-        if st.button("✖️ Đóng", key="qe_close_top", use_container_width=True):
-            st.session_state.quick_edit_image = None
-            st.rerun()
-        
-        st.divider()
-        
-        # Hiển thị ảnh nhỏ
-        img_path = DATA_ROOT / rel
-        if img_path.exists():
-            st.image(str(img_path), use_container_width=True)
+    @st.dialog("Chỉnh sửa nhanh", width="large")
+    def show_edit():
+        st.image(str(DATA_ROOT / rel), use_container_width=True)
         
         current_caption = r.get('caption', '')
         current_notes = r.get('notes', '')
         as_idx = ANATOMY_OPTIONS.index(r.get("anatomical_site", "unknown")) if r.get("anatomical_site") in ANATOMY_OPTIONS else 0
         ft_idx = FLAP_OPTIONS.index(r.get("flap_type", "unknown")) if r.get("flap_type") in FLAP_OPTIONS else 0
         
-        with st.form("quick_edit_form"):
-            new_caption = st.text_area("Caption", value=current_caption, height=100)
-            new_notes = st.text_area("Notes", value=current_notes, height=80)
-            
-            new_site = st.selectbox("Vị trí", ANATOMY_OPTIONS, index=as_idx)
-            new_flap = st.selectbox("Loại vạt", FLAP_OPTIONS, index=ft_idx)
-            
-            # PDF viewer toggle
-            source_path_str = r.get("source_document_path")
-            show_pdf = st.checkbox("📖 Xem tài liệu gốc", value=False)
-            
-            col1, col2 = st.columns(2)
-            save_btn = col1.form_submit_button("💾 Lưu", type="primary")
-            cancel_btn = col2.form_submit_button("✖️ Hủy")
-            
-            if save_btn:
-                df.loc[df["image_path"] == rel, "caption"] = new_caption
-                df.loc[df["image_path"] == rel, "notes"] = new_notes
-                df.loc[df["image_path"] == rel, "anatomical_site"] = new_site
-                df.loc[df["image_path"] == rel, "flap_type"] = new_flap
-                md_save_immediate(df)
-                mark_image_edited(rel, "quick_edit")
-                st.session_state.quick_edit_image = None
-                st.success("✅ Đã lưu!")
-                time.sleep(0.5)
-                st.rerun()
-            
-            if cancel_btn:
-                st.session_state.quick_edit_image = None
-                st.rerun()
+        new_caption = st.text_area("Caption", value=current_caption)
+        new_notes = st.text_area("Notes", value=current_notes, placeholder="Thêm ghi chú cá nhân...")
         
-        # PDF viewer bên ngoài form
-        if show_pdf and source_path_str:
-            st.divider()
-            source_path = Path(source_path_str)
-            page_number = int(r.get("page_num", 1))
-            
-            if source_path.exists():
-                try:
-                    doc = fitz.open(source_path)
-                    if doc.is_encrypted:
-                        doc.close()
-                        st.error("⚠️ PDF được bảo vệ")
-                    else:
-                        new_doc = fitz.open()
-                        new_doc.insert_pdf(doc, from_page=page_number - 1, to_page=page_number - 1)
-                        pdf_bytes = new_doc.tobytes()
-                        new_doc.close()
-                        doc.close()
-                        
-                        st.download_button(
-                            "📥 Tải trang này",
-                            pdf_bytes,
-                            file_name=f"page_{page_number}.pdf",
-                            mime="application/pdf"
-                        )
-                except Exception as e:
-                    st.error(f"Lỗi: {str(e)}")
+        c1, c2 = st.columns(2)
+        with c1:
+            new_site = st.selectbox("Vị trí", ANATOMY_OPTIONS, index=as_idx, key=f"qe_site_{rel}")
+        with c2:
+            new_flap = st.selectbox("Loại vạt", FLAP_OPTIONS, index=ft_idx, key=f"qe_flap_{rel}")
+        
+        st.markdown("---")
+        st.divider() # Thêm một đường kẻ để tách biệt
 
-def render_lightbox_enhanced():
-    """
-    Lightbox KHÔNG BLOCKING - sử dụng expander thay vì dialog.
-    """
-    if not st.session_state.get("lightbox_open"):
-        return
-    
-    seq = st.session_state.get("lightbox_seq", [])
-    if not seq:
-        st.session_state.lightbox_open = False
-        return
-    
-    idx = st.session_state.get("lightbox_idx", 0)
-    idx = max(0, min(idx, len(seq) - 1))
-    
-    if idx >= len(seq):
-        st.session_state.lightbox_open = False
-        return
-        
-    rel = seq[idx]
-    p = DATA_ROOT / rel
-    
-    if not p.exists():
-        st.session_state.lightbox_open = False
-        st.toast(f"Lỗi: Không tìm thấy ảnh: {rel}", icon="❌")
-        return
-    
-    # Sử dụng expander thay vì dialog
-    with st.expander(f"👁️ XEM CHI TIẾT - {Path(rel).name}", expanded=True):
-        df = md_load()
-        row = df[df["image_path"] == rel]
-        r = row.iloc[0] if not row.empty else {}
-        
-        # Nút điều khiển ở đầu
-        ctrl1, ctrl2, ctrl3, ctrl4, ctrl5 = st.columns([1, 1, 2, 1, 1])
-        
-        if ctrl1.button("⟵ Trước", key="lb_prev", disabled=(idx <= 0)):
-            st.session_state.lightbox_idx -= 1
-            st.rerun()
-        
-        if ctrl2.button("Sau ⟶", key="lb_next", disabled=(idx >= len(seq) - 1)):
-            st.session_state.lightbox_idx += 1
-            st.rerun()
-        
-        ctrl3.markdown(f"<center>{idx + 1} / {len(seq)}</center>", unsafe_allow_html=True)
-        
-        if ctrl4.button("Sửa ✏️", key="lb_edit"):
-            st.session_state.quick_edit_image = rel
-            # KHÔNG đóng lightbox
-            st.rerun()
-        
-        if ctrl5.button("✖ Đóng", key="lb_close"):
-            st.session_state.lightbox_open = False
-            st.rerun()
-        
-        st.divider()
-        
-        # Bố cục 2 cột
-        col_img, col_info = st.columns([3, 2])
-        
-        with col_img:
-            st.image(str(p), use_container_width=True)
-        
-        with col_info:
-            edit_info = get_image_edit_info(rel)
-            cap = r.get("caption", "Chưa có caption")
-            edit_status = "✅ Đã edit" if edit_info["is_edited"] else "📄 Chưa edit"
+        source_path_str = r.get("source_document_path")
+        if source_path_str:
+            # Sử dụng toggle để hiển thị/ẩn PDF viewer
+            show_pdf_viewer = st.toggle("📖 Xem trang tài liệu gốc", key=f"toggle_pdf_{rel}")
             
-            st.markdown(f"**{cap}**")
-            st.caption(f"{r.get('book_name', '')} • trang {r.get('page_num', '')} • {edit_status}")
-            
-            st.markdown(f"**📍 Vị trí:** {r.get('anatomical_site', 'N/A')}")
-            st.markdown(f"**🔧 Loại vạt:** {r.get('flap_type', 'N/A')}")
-            st.metric("Điểm liên quan", int(r.get('relevance_score', 0)))
-            
-            # Nút hành động
-            if st.button("➕ Thêm vào so sánh", key=f"lb_add_compare_{idx}"):
-                if rel not in st.session_state.comparison_list:
-                    st.session_state.comparison_list.append(rel)
-                    st.success("Đã thêm!")
-            
-            # PDF viewer compact
-            source_path_str = r.get("source_document_path")
-            if source_path_str:
-                if st.checkbox("📖 Tài liệu gốc", key=f"lb_pdf_{idx}"):
-                    source_path = Path(source_path_str)
-                    if source_path.exists():
-                        st.caption(f"Trang {r.get('page_num', 1)}")
-                        st.caption(f"📂 {source_path.name}")
+            if show_pdf_viewer:
+                source_path = Path(source_path_str)
+                page_number = int(r.get("page_num", 1))
+
+                if not source_path.exists():
+                    st.warning(f"Không tìm thấy file gốc tại: {source_path}")
+                else:
+                    try:
+                        # Thử mở PDF và kiểm tra mã hóa
+                        doc = fitz.open(source_path)
                         
+                        # Kiểm tra PDF có bị mã hóa không
+                        if doc.is_encrypted:
+                            doc.close()
+                            st.error("⚠️ File PDF được bảo vệ bằng mật khẩu. Không thể xem trước trong ứng dụng.")
+                            st.info(f"📂 Đường dẫn file: `{source_path}`")
+                            
+                            # Nút mở file trực tiếp (Windows)
+                            if os.name == "nt":
+                                if st.button("🔓 Mở PDF bằng ứng dụng mặc định", key=f"open_ext_{rel}"):
+                                    try:
+                                        os.startfile(str(source_path))
+                                        st.success("✅ Đã mở file! Vui lòng nhập mật khẩu trong ứng dụng PDF.")
+                                    except Exception:
+                                        st.warning("Không thể mở file tự động.")
+                        else:
+                            # PDF không bị mã hóa - hiển thị trực tiếp
+                            if page_number > len(doc):
+                                st.warning(f"Trang {page_number} vượt quá số trang ({len(doc)} trang)")
+                                doc.close()
+                            else:
+                                # Trích xuất trang
+                                new_doc = fitz.open()
+                                new_doc.insert_pdf(doc, from_page=page_number - 1, to_page=page_number - 1)
+                                pdf_bytes = new_doc.tobytes()
+                                new_doc.close()
+                                doc.close()
+
+                                # Hiển thị PDF inline (không dùng nested dialog)
+                                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                                
+                                st.markdown(f"**📄 Trang {page_number}** từ `{source_path.name}`")
+                                iframe_html = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" style="border: 1px solid #ddd; border-radius: 4px;"></iframe>'
+                                st.markdown(iframe_html, unsafe_allow_html=True)
+                    
+                    except RuntimeError as e:
+                        # Lỗi mã hóa/mật khẩu
+                        error_msg = str(e).lower()
+                        if "encrypted" in error_msg or "password" in error_msg:
+                            st.error("⚠️ File PDF được bảo vệ bằng mật khẩu.")
+                            st.info(f"Vui lòng mở file: `{source_path}`")
+                            
+                            if os.name == "nt" and st.button("📂 Mở PDF", key=f"open_enc_{rel}"):
+                                try:
+                                    os.startfile(str(source_path))
+                                except Exception:
+                                    pass
+                        else:
+                            st.error(f"Lỗi khi đọc PDF: {str(e)}")
+                    
+                    except Exception as e:
+                        st.error(f"Không thể mở trang tài liệu: {str(e)}")
+                        st.caption(f"File: `{source_path}`")
+        # === NÚT LƯU VÀ HỦY ===
+        btn_save, btn_cancel = st.columns(2)
+        if btn_save.button("💾 Lưu thay đổi", type="primary", key=f"qe_save_{rel}", use_container_width=True):
+            df.loc[df["image_path"] == rel, "caption"] = new_caption
+            df.loc[df["image_path"] == rel, "notes"] = new_notes
+            df.loc[df["image_path"] == rel, "anatomical_site"] = new_site
+            df.loc[df["image_path"] == rel, "flap_type"] = new_flap
+            md_save_immediate(df)
+            mark_image_edited(rel, "quick_edit")
+            st.session_state.quick_edit_image = None
+            st.rerun()
+            
+        if btn_cancel.button("✖ Hủy", key=f"qe_cancel_{rel}", use_container_width=True):
+            st.session_state.quick_edit_image = None
+            st.rerun()
+
+        # ============================================
+        # === THÊM NÚT XÓA VÀO VÙNG RIÊNG BIỆT ===
+        # ============================================
+        st.divider()
+        st.error("🔴 Vùng nguy hiểm")
+        if st.button(f"🗑️ Xóa vĩnh viễn ảnh này", key=f"qe_delete_{rel}", use_container_width=True):
+            # Xóa file ảnh và thumbnail
+            (DATA_ROOT / rel).unlink(missing_ok=True)
+            tpr = r.get("thumb_path", "")
+            if tpr:
+                (DATA_ROOT / tpr).unlink(missing_ok=True)
+            
+            # Xóa metadata
+            md_delete_by_paths_batch([rel])
+
+            # Dọn dẹp session state
+            if rel in st.session_state.selected_list:
+                st.session_state.selected_list.remove(rel)
+            if rel in st.session_state.edited_images_set:
+                st.session_state.edited_images_set.remove(rel)
+            
+            st.toast(f"✅ Đã xóa ảnh: {Path(rel).name}", icon="🗑️")
+            st.session_state.quick_edit_image = None # Đóng dialog
+            st.rerun()
+
+    show_edit()
+
 def render_library_gallery_optimized(view: pd.DataFrame):
     """
     Grid ảnh được tối ưu với pagination, card siêu nhẹ và đã tích hợp lại
@@ -3382,13 +3320,7 @@ def main():
                 
                 fkw = st.text_input("Keyword (caption/context)", value=preset.get("kw", ""), 
                                   key="lib_kw", placeholder="vd: bilobed, nasal tip...")
-                # === THÊM CHECKBOX BẬT/TẮT DỊCH TỰ ĐỘNG ===
-                use_translation = st.checkbox(
-                    "Dịch và tìm kiếm song ngữ (Vi → En)",
-                    value=True,
-                    help="Khi bật, từ khóa tiếng Việt sẽ được tự động dịch sang tiếng Anh và tìm kiếm cả hai."
-                )
-
+               
                 c1, c2 = st.columns(2)
                 if c1.button("↺ Reset"):
                     for k in ["lib_book", "lib_page", "lib_group", "lib_site_multi", "lib_flap", "lib_src", "lib_edited", "lib_kw"]:
@@ -3445,7 +3377,18 @@ def main():
                 # Mặc định, mẫu tìm kiếm (search_pattern) chính là từ khóa gốc đã xử lý
                 search_pattern = search_term
 
-                 # Logic tìm kiếm cuối cùng
+                # === ÁP DỤNG LOGIC DỊCH VÀ TÌM KIẾM SONG NGỮ ===
+                if use_translation:
+                    # Gọi hàm dịch
+                    english_kw = translate_vietnamese_to_english(search_term)
+                    
+                    # Nếu dịch thành công và kết quả khác với từ khóa gốc
+                    if english_kw and english_kw.lower() != search_term:
+                        st.sidebar.info(f"Đang tìm kiếm cho: **'{search_term}'** OR **'{english_kw}'**")
+                        # Cập nhật mẫu tìm kiếm để bao gồm cả hai từ (dùng regex OR `|`)
+                        search_pattern = f"{search_term}|{english_kw.lower()}"
+
+                # Logic tìm kiếm cuối cùng
                 bag = (view["caption"].fillna("") + " " + view["context"].fillna("")).str.lower()
                                
                 # Sử dụng regex=True để biểu thức `|` hoạt động
@@ -3880,5 +3823,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
